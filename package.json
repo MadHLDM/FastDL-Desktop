@@ -1,0 +1,17 @@
+{
+	"scripts": {
+		"dev": "vite",
+		"build": "tsc && vite build",
+		"preview": "vite preview",
+		"tauri": "node scripts/tauri-with-hashes.mjs"
+	},
+	"dependencies": {
+		"@tauri-apps/api": "^2.0.0",
+		"@tauri-apps/plugin-dialog": "^2.0.0"
+	},
+	"devDependencies": {
+		"@tauri-apps/cli": "^2.0.0",
+		"typescript": "^5.6.0",
+		"vite": "^7.2.7"
+	}
+}
