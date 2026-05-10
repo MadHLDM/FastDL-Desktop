@@ -1,28 +1,36 @@
 # FastDL Desktop
 
-Desktop app for validating and publishing Sven Co-op FastDL packages.
+Desktop app for validating, installing, compressing, publishing, and rolling back Sven Co-op FastDL packages.
 
-This project is intentionally split in two layers:
+FastDL Desktop is built with Tauri, Rust, Vite, and TypeScript. The Rust backend handles package validation, file operations, compression, remote publishing, audit logs, rollback safety, and credential storage. The frontend provides the desktop workflow for configuration, validation, publishing, upload history, and log review.
 
-- `src-tauri/src`: Rust core and Tauri commands.
-- `src`: GUI built with Vite and TypeScript.
+## Features
 
-The first implemented slice validates ZIP packages with the same security posture as the Discord bot:
+- Validates ZIP packages before install.
+- Blocks unsafe ZIP paths, including traversal, absolute paths, Windows drive paths, backslashes, unsafe components, reserved Windows names, symlinks, duplicate paths, and case collisions.
+- Enforces per-content limits, folder rules, extension rules, and lowercase paths where required.
+- Validates `maps/*.res` entries against the ZIP contents and the configured server root.
+- Previews destination conflicts before install.
+- Installs package files into the configured game server root.
+- Generates optional `.gz` and `.bz2` FastDL files.
+- Supports local FastDL output or remote FTP/SFTP publishing.
+- Supports optional remote game server publishing over FTP/SFTP.
+- Writes upload manifests and audit logs.
+- Provides hash-aware rollback for installed files.
+- Rolls back published FTP/SFTP files recorded in manifests.
+- Shows upload history, manifests, and audit logs inside the app.
+- Opens the logs folder from the app.
+- Stores FTP/SFTP passwords and SFTP key passphrases in platform secret storage.
+- Pins trusted SFTP host fingerprints and blocks SFTP operations if a host key changes.
+- Generates release `SHA256SUMS.txt` files for MSI/EXE artifacts.
 
-- rejects path traversal, absolute paths, Windows drive paths, backslashes, unsafe components, Windows reserved names, symlinks, duplicate paths, and case collisions;
-- applies per-content limits and folder/extension rules;
-- enforces lowercase paths when content rules require it;
-- validates `maps/*.res` resources against the ZIP contents and the server root;
-- previews compressed FastDL output and destination conflicts.
-- keeps validation as a standalone validate-only command before install;
-- installs packages into the server root while optionally generating `.gz` and `.bz2` copies in a separate FastDL root;
-- writes upload manifests, supports hash-aware rollback, and appends audit logs under `.fastdl-desktop/logs/audit.tsv`;
-- optionally publishes original game server files over FTP/SFTP while retaining local validation/staging;
-- optionally publishes generated FastDL files over FTP or SFTP and records remote publish history;
-- rolls back FTP/SFTP published files when remote publishing is enabled during rollback;
-- shows audit log entries and upload manifests inside the desktop app, with a shortcut to open the logs folder;
-- pins trusted SFTP host fingerprints after user confirmation and blocks SFTP publishing if a host key changes;
-- persists desktop configuration while keeping FTP/SFTP passwords and SFTP key passphrases in Windows Credential Manager instead of the config file.
+## Security
+
+FastDL Desktop treats package installation as a sensitive file operation. ZIP contents are validated before extraction, rollback checks expected hashes before deleting installed files, and SFTP host fingerprints must be trusted before SFTP publishing can proceed.
+
+Credentials are not saved in the app JSON config. On Windows, secrets are stored in Windows Credential Manager. On Linux, secrets are stored through Secret Service using `secret-tool`.
+
+Unsigned Windows builds may trigger SmartScreen warnings. Verify release downloads with `SHA256SUMS.txt`.
 
 ## Requirements
 
@@ -62,12 +70,6 @@ GitHub Actions checks Windows and Linux with:
 
 - `npm ci`
 - `npm run build`
+- `cargo fmt --manifest-path src-tauri/Cargo.toml --check`
 - `cargo check --manifest-path src-tauri/Cargo.toml --locked`
-
-## Porting Roadmap
-
-1. Port install/staging/rollback manifests from the Python bot.
-2. Add gzip/bzip2 generation.
-3. Add SFTP publishing.
-4. Add release signing and update-channel automation.
-5. Add integration tests with fixture ZIPs.
+- `cargo test --manifest-path src-tauri/Cargo.toml --locked`
