@@ -38,7 +38,7 @@ async function writeReleaseHashes() {
 	const bundleRoot = path.join(projectRoot, "src-tauri", "target", "release", "bundle");
 	const artifacts = await findArtifacts(bundleRoot);
 	if (!artifacts.length) {
-		console.warn("No MSI or setup EXE artifacts found for SHA256SUMS.txt.");
+		console.warn("No release artifacts found for SHA256SUMS.txt.");
 		return;
 	}
 
@@ -57,20 +57,39 @@ async function writeReleaseHashes() {
 }
 
 async function findArtifacts(bundleRoot) {
+	if (!existsSync(bundleRoot)) {
+		return [];
+	}
 	const artifacts = [];
-	for (const directory of ["msi", "nsis"]) {
-		const target = path.join(bundleRoot, directory);
-		if (!existsSync(target)) {
+	await collectArtifacts(bundleRoot, artifacts);
+	return artifacts;
+}
+
+async function collectArtifacts(directory, artifacts) {
+	for (const entry of await readdir(directory, { withFileTypes: true })) {
+		const current = path.join(directory, entry.name);
+		if (entry.isDirectory()) {
+			await collectArtifacts(current, artifacts);
 			continue;
 		}
-		for (const file of await readdir(target)) {
-			const extension = path.extname(file).toLowerCase();
-			if (extension === ".msi" || extension === ".exe") {
-				artifacts.push(path.join(target, file));
-			}
+		if (entry.isFile() && isReleaseArtifact(entry.name)) {
+			artifacts.push(current);
 		}
 	}
-	return artifacts;
+}
+
+function isReleaseArtifact(fileName) {
+	const lower = fileName.toLowerCase();
+	return [
+		".msi",
+		".exe",
+		".deb",
+		".rpm",
+		".appimage",
+		".dmg",
+		".tar.gz",
+		".tgz",
+	].some((extension) => lower.endsWith(extension));
 }
 
 async function writePerDirectoryHashes(bundleRoot, artifacts) {

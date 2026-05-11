@@ -1,6 +1,24 @@
 # Release Checklist
 
-FastDL Desktop is built with Tauri and currently produces Windows MSI and NSIS bundles.
+FastDL Desktop is built with Tauri and produces Windows and Linux bundles through GitHub Actions release automation.
+
+## Automated Release
+
+Push a version tag to build Windows and Ubuntu bundles, generate checksum files, and create a draft GitHub Release:
+
+```powershell
+git tag v0.1.0-beta.1
+git push origin v0.1.0-beta.1
+```
+
+The release workflow uploads platform artifacts and checksum files:
+
+- Windows: MSI and NSIS setup EXE.
+- Linux: generated Tauri Linux packages for the Ubuntu runner.
+- `SHA256SUMS-windows.txt`
+- `SHA256SUMS-linux.txt`
+
+Review the draft release before publishing it.
 
 ## Required Checks
 

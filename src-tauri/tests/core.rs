@@ -1,6 +1,8 @@
 use fastdl_desktop_lib::config::{AppConfig, CompressedFormat};
 use fastdl_desktop_lib::storage::{install_package, list_uploads, rollback_upload, UploadManifest};
 use fastdl_desktop_lib::validation::validate_zip;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -38,6 +40,27 @@ fn temp_zip(temp: &TempDir, files: &[(&str, &[u8])]) -> PathBuf {
 	zip_path
 }
 
+fn write_tar_gz(path: &Path, files: &[(&str, &[u8])]) {
+	let file = File::create(path).expect("create tar.gz");
+	let encoder = GzEncoder::new(file, Compression::default());
+	let mut archive = tar::Builder::new(encoder);
+	for (name, content) in files {
+		let mut header = tar::Header::new_gnu();
+		header.set_size(content.len() as u64);
+		header.set_cksum();
+		archive
+			.append_data(&mut header, *name, *content)
+			.expect("append tar file");
+	}
+	archive.finish().expect("finish tar.gz");
+}
+
+fn temp_tar_gz(temp: &TempDir, files: &[(&str, &[u8])]) -> PathBuf {
+	let path = temp.path().join("package.tar.gz");
+	write_tar_gz(&path, files);
+	path
+}
+
 #[test]
 fn validates_safe_map_package() {
 	let temp = TempDir::new().unwrap();
@@ -62,6 +85,27 @@ fn validates_safe_map_package() {
 		.compressed_files
 		.iter()
 		.any(|path| path == "maps/test.bsp.bz2"));
+}
+
+#[test]
+fn validates_and_installs_tar_gz_map_package() {
+	let temp = TempDir::new().unwrap();
+	let server_root = temp.path().join("server");
+	let config = test_config(&server_root);
+	let package_path = temp_tar_gz(
+		&temp,
+		&[
+			("maps/test.bsp", b"bsp"),
+			("maps/test.res", b"sound/test.wav\n"),
+			("sound/test.wav", b"wav"),
+		],
+	);
+
+	let report = validate_zip(&config, &package_path, "map").expect("valid tar.gz package");
+	assert_eq!(report.file_count, 3);
+
+	install_package(&config, &package_path, "map").expect("install tar.gz package");
+	assert!(server_root.join("maps/test.bsp").exists());
 }
 
 #[test]

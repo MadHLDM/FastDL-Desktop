@@ -4,8 +4,12 @@ use crate::ftp::delete_files as delete_ftp_files;
 use crate::ftp::publish_files as publish_ftp_files;
 use crate::sftp::delete_files as delete_sftp_files;
 use crate::sftp::publish_files as publish_sftp_files;
-use crate::validation::{normalize_zip_path, path_from_posix, validate_zip, ValidationReport};
+use crate::validation::{
+	archive_kind, normalize_zip_path, path_from_posix, validate_zip, ArchiveKind, ValidationReport,
+};
+use bzip2::read::BzDecoder as BzReadDecoder;
 use bzip2::write::BzEncoder;
+use flate2::read::GzDecoder as GzReadDecoder;
 use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -128,12 +132,12 @@ pub fn install_package_with_progress(
 	content_type: &str,
 	mut progress: impl FnMut(ProgressEvent),
 ) -> Result<InstallReport, StorageError> {
-	emit_progress(&mut progress, "validating", "Validating ZIP package", 0, 0);
+	emit_progress(&mut progress, "validating", "Validating package", 0, 0);
 	let validation = validate_zip(config, zip_path.as_ref(), content_type)?;
 	emit_progress(
 		&mut progress,
 		"validated",
-		"ZIP package passed validation",
+		"Package passed validation",
 		validation.file_count,
 		validation.file_count,
 	);
@@ -175,11 +179,11 @@ pub fn install_package_with_progress(
 		emit_progress(
 			&mut progress,
 			"extracting",
-			"Extracting ZIP to staging",
+			"Extracting package to staging",
 			0,
 			0,
 		);
-		extract_zip_to_staging(config, zip_path.as_ref(), &staging_dir, content_type)?;
+		extract_package_to_staging(config, zip_path.as_ref(), &staging_dir, content_type)?;
 		install_staged_files(config, &roots, &staging_dir, &mut manifest, &mut progress)?;
 		manifest.server_published_files = publish_server_files(config, &roots, &manifest)?;
 		write_manifest(&roots, &manifest)?;
@@ -388,35 +392,111 @@ pub fn rollback_upload(
 	})
 }
 
-fn extract_zip_to_staging(
+fn extract_package_to_staging(
 	config: &AppConfig,
-	zip_path: &Path,
+	package_path: &Path,
 	staging_dir: &Path,
 	content_type: &str,
 ) -> Result<(), StorageError> {
 	let content_type = config
 		.content_type(content_type)
 		.ok_or_else(|| StorageError::Rejected(format!("unknown content type: {content_type}")))?;
-	let file = File::open(zip_path)?;
-	let mut archive = ZipArchive::new(file)?;
-	for index in 0..archive.len() {
-		let mut entry = archive.by_index(index)?;
-		if entry.is_dir() {
+	match archive_kind(package_path)? {
+		ArchiveKind::Zip => {
+			let file = File::open(package_path)?;
+			let mut archive = ZipArchive::new(file)?;
+			for index in 0..archive.len() {
+				let mut entry = archive.by_index(index)?;
+				if entry.is_dir() {
+					continue;
+				}
+				if entry
+					.unix_mode()
+					.is_some_and(|mode| mode & 0o170000 == 0o120000)
+				{
+					return Err(StorageError::Rejected(format!(
+						"{}: symlinks are not accepted",
+						entry.name()
+					)));
+				}
+				let raw_name = entry.name().to_string();
+				extract_entry_to_staging(
+					&raw_name,
+					&mut entry,
+					content_type.max_depth,
+					staging_dir,
+				)?;
+			}
+		}
+		ArchiveKind::Tar => {
+			let file = File::open(package_path)?;
+			extract_tar_to_staging(tar::Archive::new(file), content_type.max_depth, staging_dir)?;
+		}
+		ArchiveKind::TarGz => {
+			let file = File::open(package_path)?;
+			extract_tar_to_staging(
+				tar::Archive::new(GzReadDecoder::new(file)),
+				content_type.max_depth,
+				staging_dir,
+			)?;
+		}
+		ArchiveKind::TarBz2 => {
+			let file = File::open(package_path)?;
+			extract_tar_to_staging(
+				tar::Archive::new(BzReadDecoder::new(file)),
+				content_type.max_depth,
+				staging_dir,
+			)?;
+		}
+	}
+	Ok(())
+}
+
+fn extract_tar_to_staging<R: Read>(
+	mut archive: tar::Archive<R>,
+	max_depth: usize,
+	staging_dir: &Path,
+) -> Result<(), StorageError> {
+	for entry in archive.entries()? {
+		let mut entry = entry?;
+		let entry_type = entry.header().entry_type();
+		if entry_type.is_dir() {
 			continue;
 		}
-		let normalized_path = normalize_zip_path(entry.name(), content_type.max_depth)?;
-		let target = staging_dir.join(path_from_posix(&normalized_path));
-		if !is_child_path(&target, staging_dir) {
+		let raw_name = entry.path()?.to_string_lossy().to_string();
+		if entry_type.is_symlink() || entry_type.is_hard_link() {
 			return Err(StorageError::Rejected(format!(
-				"refusing to extract outside staging: {normalized_path}"
+				"{raw_name}: symlinks and hard links are not accepted"
 			)));
 		}
-		if let Some(parent) = target.parent() {
-			fs::create_dir_all(parent)?;
+		if !entry_type.is_file() {
+			return Err(StorageError::Rejected(format!(
+				"{raw_name}: unsupported tar entry type"
+			)));
 		}
-		let mut output = File::create(target)?;
-		std::io::copy(&mut entry, &mut output)?;
+		extract_entry_to_staging(&raw_name, &mut entry, max_depth, staging_dir)?;
 	}
+	Ok(())
+}
+
+fn extract_entry_to_staging(
+	raw_name: &str,
+	reader: &mut dyn Read,
+	max_depth: usize,
+	staging_dir: &Path,
+) -> Result<(), StorageError> {
+	let normalized_path = normalize_zip_path(raw_name, max_depth)?;
+	let target = staging_dir.join(path_from_posix(&normalized_path));
+	if !is_child_path(&target, staging_dir) {
+		return Err(StorageError::Rejected(format!(
+			"refusing to extract outside staging: {normalized_path}"
+		)));
+	}
+	if let Some(parent) = target.parent() {
+		fs::create_dir_all(parent)?;
+	}
+	let mut output = File::create(target)?;
+	std::io::copy(reader, &mut output)?;
 	Ok(())
 }
 

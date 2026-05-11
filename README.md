@@ -6,8 +6,8 @@ FastDL Desktop is built with Tauri, Rust, Vite, and TypeScript. The Rust backend
 
 ## Features
 
-- Validates ZIP packages before install.
-- Blocks unsafe ZIP paths, including traversal, absolute paths, Windows drive paths, backslashes, unsafe components, reserved Windows names, symlinks, duplicate paths, and case collisions.
+- Validates `.zip`, `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, and `.tbz2` packages before install.
+- Blocks unsafe archive paths, including traversal, absolute paths, Windows drive paths, backslashes, unsafe components, reserved Windows names, symlinks, hard links, duplicate paths, and case collisions.
 - Enforces per-content limits, folder rules, extension rules, and lowercase paths where required.
 - Validates `maps/*.res` entries against the ZIP contents and the configured server root.
 - Previews destination conflicts before install.
@@ -26,7 +26,7 @@ FastDL Desktop is built with Tauri, Rust, Vite, and TypeScript. The Rust backend
 
 ## Security
 
-FastDL Desktop treats package installation as a sensitive file operation. ZIP contents are validated before extraction, rollback checks expected hashes before deleting installed files, and SFTP host fingerprints must be trusted before SFTP publishing can proceed.
+FastDL Desktop treats package installation as a sensitive file operation. Archive contents are validated before extraction, rollback checks expected hashes before deleting installed files, and SFTP host fingerprints must be trusted before SFTP publishing can proceed.
 
 Credentials are not saved in the app JSON config. On Windows, secrets are stored in Windows Credential Manager. On Linux, secrets are stored through Secret Service using `secret-tool`.
 

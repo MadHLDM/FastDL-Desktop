@@ -1,4 +1,6 @@
 use crate::config::{AppConfig, CompressedFormat, ContentTypeConfig};
+use bzip2::read::BzDecoder;
+use flate2::read::GzDecoder;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -18,10 +20,12 @@ pub enum ValidationError {
 	UnknownContentType(String),
 	#[error("select the server root directory before validating")]
 	MissingServerRoot,
-	#[error("could not open the ZIP file: {0}")]
-	OpenZip(#[source] std::io::Error),
+	#[error("could not open the package archive: {0}")]
+	OpenPackage(#[source] std::io::Error),
 	#[error("file is not a valid ZIP archive: {0}")]
 	InvalidZip(#[source] zip::result::ZipError),
+	#[error("file is not a valid TAR archive: {0}")]
+	InvalidTar(#[source] std::io::Error),
 	#[error("{0}")]
 	Rejected(String),
 }
@@ -55,9 +59,17 @@ pub struct FileSummary {
 	pub compressed_size: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArchiveKind {
+	Zip,
+	Tar,
+	TarGz,
+	TarBz2,
+}
+
 pub fn validate_zip(
 	config: &AppConfig,
-	zip_path: impl AsRef<Path>,
+	package_path: impl AsRef<Path>,
 	content_type_id: &str,
 ) -> Result<ValidationReport, ValidationError> {
 	let content_type = config
@@ -67,8 +79,8 @@ pub fn validate_zip(
 		return Err(ValidationError::MissingServerRoot);
 	}
 
-	let file = File::open(zip_path).map_err(ValidationError::OpenZip)?;
-	let mut archive = ZipArchive::new(file).map_err(ValidationError::InvalidZip)?;
+	let package_path = package_path.as_ref();
+	let kind = archive_kind(package_path)?;
 	let mut files = Vec::new();
 	let mut package_paths = BTreeSet::new();
 	let mut res_files = Vec::new();
@@ -77,18 +89,15 @@ pub fn validate_zip(
 	let mut total_compressed_bytes = 0_u64;
 	let mut total_uncompressed_bytes = 0_u64;
 
-	for index in 0..archive.len() {
-		let mut entry = archive
-			.by_index(index)
-			.map_err(ValidationError::InvalidZip)?;
-		if entry.is_dir() {
-			continue;
-		}
-
-		let raw_name = entry.name().to_string();
+	let mut process_entry = |raw_name: String,
+	                         size: u64,
+	                         compressed_size: u64,
+	                         is_symlink: bool,
+	                         reader: &mut dyn Read|
+	 -> Result<(), ValidationError> {
 		let normalized_path = normalize_zip_path(&raw_name, content_type.max_depth)?;
 		validate_entry_path(&normalized_path, content_type)?;
-		if is_zip_symlink(entry.unix_mode()) {
+		if is_symlink {
 			return Err(ValidationError::Rejected(format!(
 				"{raw_name}: symlinks are not accepted"
 			)));
@@ -119,19 +128,19 @@ pub fn validate_zip(
 				content_type.name
 			)));
 		}
-		if entry.size() > content_type.max_file_bytes {
+		if size > content_type.max_file_bytes {
 			return Err(ValidationError::Rejected(format!(
 				"{normalized_path}: file exceeds the per-file size limit"
 			)));
 		}
 
-		total_compressed_bytes = total_compressed_bytes.saturating_add(entry.compressed_size());
+		total_compressed_bytes = total_compressed_bytes.saturating_add(compressed_size);
 		if total_compressed_bytes > content_type.max_compressed_bytes {
 			return Err(ValidationError::Rejected(
 				"compressed content exceeds the configured limit".to_string(),
 			));
 		}
-		total_uncompressed_bytes = total_uncompressed_bytes.saturating_add(entry.size());
+		total_uncompressed_bytes = total_uncompressed_bytes.saturating_add(size);
 		if total_uncompressed_bytes > content_type.max_uncompressed_bytes {
 			return Err(ValidationError::Rejected(
 				"uncompressed content exceeds the configured limit".to_string(),
@@ -140,7 +149,7 @@ pub fn validate_zip(
 
 		if is_map_res_file(&normalized_path) {
 			let mut content = String::new();
-			entry.read_to_string(&mut content).map_err(|error| {
+			reader.read_to_string(&mut content).map_err(|error| {
 				ValidationError::Rejected(format!(
 					"{normalized_path}: could not read .res file: {error}"
 				))
@@ -151,25 +160,78 @@ pub fn validate_zip(
 		found_extensions.insert(extension);
 		files.push(FileSummary {
 			path: normalized_path,
-			size: entry.size(),
-			compressed_size: entry.compressed_size(),
+			size,
+			compressed_size,
 		});
+		Ok(())
+	};
+
+	match kind {
+		ArchiveKind::Zip => {
+			let file = File::open(package_path).map_err(ValidationError::OpenPackage)?;
+			let mut archive = ZipArchive::new(file).map_err(ValidationError::InvalidZip)?;
+			for index in 0..archive.len() {
+				let mut entry = archive
+					.by_index(index)
+					.map_err(ValidationError::InvalidZip)?;
+				if entry.is_dir() {
+					continue;
+				}
+				process_entry(
+					entry.name().to_string(),
+					entry.size(),
+					entry.compressed_size(),
+					is_zip_symlink(entry.unix_mode()),
+					&mut entry,
+				)?;
+			}
+		}
+		ArchiveKind::Tar | ArchiveKind::TarGz | ArchiveKind::TarBz2 => {
+			let package_compressed_bytes = File::open(package_path)
+				.and_then(|file| file.metadata())
+				.map_err(ValidationError::OpenPackage)?
+				.len();
+			if package_compressed_bytes > content_type.max_compressed_bytes {
+				return Err(ValidationError::Rejected(
+					"compressed content exceeds the configured limit".to_string(),
+				));
+			}
+			match kind {
+				ArchiveKind::Tar => {
+					let file = File::open(package_path).map_err(ValidationError::OpenPackage)?;
+					validate_tar_archive(tar::Archive::new(file), &mut process_entry)?;
+				}
+				ArchiveKind::TarGz => {
+					let file = File::open(package_path).map_err(ValidationError::OpenPackage)?;
+					validate_tar_archive(
+						tar::Archive::new(GzDecoder::new(file)),
+						&mut process_entry,
+					)?;
+				}
+				ArchiveKind::TarBz2 => {
+					let file = File::open(package_path).map_err(ValidationError::OpenPackage)?;
+					validate_tar_archive(
+						tar::Archive::new(BzDecoder::new(file)),
+						&mut process_entry,
+					)?;
+				}
+				ArchiveKind::Zip => unreachable!("ZIP entries are handled separately"),
+			}
+		}
 	}
 
 	if files.is_empty() {
-		return Err(ValidationError::Rejected(
-			"ZIP archive is empty".to_string(),
-		));
+		return Err(ValidationError::Rejected("archive is empty".to_string()));
 	}
 	if files.len() > content_type.max_file_count {
 		return Err(ValidationError::Rejected(
-			"ZIP archive exceeds the file count limit".to_string(),
+			"archive exceeds the file count limit".to_string(),
 		));
 	}
 	for required in &content_type.required_extensions {
 		if !found_extensions.contains(required) {
 			return Err(ValidationError::Rejected(format!(
-				"ZIP archive must contain the required extension {required}"
+				"archive must contain the required extension {required}"
 			)));
 		}
 	}
@@ -182,7 +244,7 @@ pub fn validate_zip(
 			.any(|required| found_extensions.contains(required))
 	{
 		return Err(ValidationError::Rejected(format!(
-			"ZIP archive must contain at least one of these extensions: {}",
+			"archive must contain at least one of these extensions: {}",
 			content_type.required_any_extensions.join(", ")
 		)));
 	}
@@ -214,6 +276,59 @@ pub fn validate_zip(
 		compressed_files,
 		conflicts,
 	})
+}
+
+pub(crate) fn archive_kind(path: &Path) -> Result<ArchiveKind, ValidationError> {
+	let file_name = path
+		.file_name()
+		.and_then(|value| value.to_str())
+		.unwrap_or("")
+		.to_ascii_lowercase();
+	if file_name.ends_with(".zip") {
+		return Ok(ArchiveKind::Zip);
+	}
+	if file_name.ends_with(".tar") {
+		return Ok(ArchiveKind::Tar);
+	}
+	if file_name.ends_with(".tar.gz") || file_name.ends_with(".tgz") {
+		return Ok(ArchiveKind::TarGz);
+	}
+	if file_name.ends_with(".tar.bz2") || file_name.ends_with(".tbz2") {
+		return Ok(ArchiveKind::TarBz2);
+	}
+	Err(ValidationError::Rejected(
+		"unsupported archive format; use .zip, .tar, .tar.gz, .tgz, .tar.bz2, or .tbz2".to_string(),
+	))
+}
+
+fn validate_tar_archive<R>(
+	mut archive: tar::Archive<R>,
+	process_entry: &mut impl FnMut(String, u64, u64, bool, &mut dyn Read) -> Result<(), ValidationError>,
+) -> Result<(), ValidationError>
+where
+	R: Read,
+{
+	for entry in archive.entries().map_err(ValidationError::InvalidTar)? {
+		let mut entry = entry.map_err(ValidationError::InvalidTar)?;
+		let entry_type = entry.header().entry_type();
+		if entry_type.is_dir() {
+			continue;
+		}
+		let raw_name = entry
+			.path()
+			.map_err(ValidationError::InvalidTar)?
+			.to_string_lossy()
+			.to_string();
+		let size = entry.size();
+		process_entry(
+			raw_name,
+			size,
+			0,
+			entry_type.is_symlink() || entry_type.is_hard_link(),
+			&mut entry,
+		)?;
+	}
+	Ok(())
 }
 
 pub(crate) fn normalize_zip_path(

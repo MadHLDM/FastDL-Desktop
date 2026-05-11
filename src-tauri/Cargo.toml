@@ -23,6 +23,7 @@ ssh2 = "0.9"
 suppaftp = "8"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tar = "0.4"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "macros"] }
 uuid = { version = "1", features = ["v4"] }

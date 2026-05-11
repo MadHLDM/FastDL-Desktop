@@ -275,10 +275,10 @@ function render() {
 						</label>
 
 						<label class="field grow">
-							<span>ZIP</span>
+							<span>Package</span>
 							<div class="path-row">
 								<input id="zip-path" value="${escapeAttribute(selectedZipPath)}" spellcheck="false" />
-								<button id="pick-zip" class="icon-button" title="Select ZIP" type="button">...</button>
+								<button id="pick-zip" class="icon-button" title="Select package archive" type="button">...</button>
 							</div>
 						</label>
 
@@ -561,7 +561,7 @@ function renderEmptyState() {
 		<div class="empty-state">
 			<div class="empty-mark">FDL</div>
 			<h2>No package validated</h2>
-			<p>Select a ZIP to generate the preview before installing.</p>
+			<p>Select an archive to generate the preview before installing.</p>
 		</div>
 	`;
 }
@@ -1199,8 +1199,8 @@ async function pickZip() {
 		multiple: false,
 		filters: [
 			{
-				name: "ZIP",
-				extensions: ["zip"],
+				name: "Package archive",
+				extensions: ["zip", "tar", "gz", "tgz", "bz2", "tbz2"],
 			},
 		],
 	});
