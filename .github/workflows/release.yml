@@ -68,7 +68,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 
           Get-ChildItem -Path $bundleRoot -Recurse -File |
-            Where-Object { $_.Name -match '\.(msi|exe|deb|rpm|AppImage|dmg)$' -or $_.Name -match '\.(tar\.gz|tgz)$' } |
+            Where-Object { $_.Name -match '\.(msi|exe|deb|rpm|AppImage|dmg)$' } |
             ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $releaseDir }
 
           Copy-Item -LiteralPath "$bundleRoot/SHA256SUMS.txt" -Destination "$releaseDir/SHA256SUMS-$platform.txt"
@@ -110,6 +110,14 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release edit "$TAG_NAME" \
+              --draft \
+              --title "FastDL Desktop $TAG_NAME" \
+              --notes-file release-notes.md
+            gh release view "$TAG_NAME" --json assets --jq '.assets[].name' |
+              while IFS= read -r asset; do
+                gh release delete-asset "$TAG_NAME" "$asset" --yes
+              done
             gh release upload "$TAG_NAME" release-assets/* --clobber
           else
             gh release create "$TAG_NAME" release-assets/* \

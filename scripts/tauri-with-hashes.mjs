@@ -87,8 +87,6 @@ function isReleaseArtifact(fileName) {
 		".rpm",
 		".appimage",
 		".dmg",
-		".tar.gz",
-		".tgz",
 	].some((extension) => lower.endsWith(extension));
 }
 
