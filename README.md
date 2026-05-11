@@ -56,6 +56,10 @@ Release builds generate `SHA256SUMS.txt` files next to the bundled MSI/EXE artif
 
 Release signing notes are documented in `docs/RELEASE.md`.
 
+## License
+
+FastDL Desktop is licensed under the MIT License. See `LICENSE` for details.
+
 ## SFTP Troubleshooting
 
 `SSH handshake failed: Unable to exchange encryption key` means the app reached the SSH server, but no compatible key exchange, cipher, or host key algorithm was negotiated before authentication. FileZilla can still connect to the same server if it supports a different SSH algorithm set than the libssh2 backend used by FastDL Desktop. Newer builds include the local FastDL Desktop SFTP algorithm list in the error message so it can be compared with the FileZilla connection log.

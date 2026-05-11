@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Secure desktop FastDL package manager for Sven Co-op."
 authors = ["Gabriel"]
 edition = "2021"
+license = "MIT"
 
 [lib]
 name = "fastdl_desktop_lib"
